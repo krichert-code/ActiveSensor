@@ -7,7 +7,8 @@
 
 
 #define TIME_TO_SLEEP  60 * 1000000ULL /* Time ESP32 will go to sleep (in seconds) */
-#define SENSORS_COUNT 2
+#define SENSORS_COUNT  2
+#define NOT_READY      0
 
 const String sensor1 = "FurtkaKontraktron";
 const String sensor2 = "TempZew";
@@ -232,6 +233,7 @@ void setup() {
     }
   
     if ((mode >> ASYNC_MOVE_SENSOR_EN) & 0x1) {
+      pinMode(sensorPin, INPUT_PULLUP);
       esp_sleep_enable_ext0_wakeup(sensorPin, 1);  
       rtc_gpio_pulldown_dis(sensorPin);
       rtc_gpio_pullup_en(sensorPin);
@@ -261,8 +263,12 @@ void loop() {
     if (result > 0) {
       Serial.println("Move sensor detected");
       delay(10000);
-      result = sendHTTPReq(sensorOffUrl).length();
+      if (digitalRead(sensorPin) == 0) {
+        result = sendHTTPReq(sensorOffUrl).length();
+      }
+      else result = NOT_READY;
     }
+
     if (result > 0) {
       moveSensorState = 0;
       Serial.println("Move sensor armed");
@@ -279,12 +285,15 @@ void loop() {
     Serial.println(temperatureC);    
     tempSensorState = 0;
   }
-  
-  if ((mode >> DEEP_SLEEP_EN) & 0x1) {
-     Serial.println("Going sleep");
-    delay(500);
-    esp_deep_sleep_start();
+
+  if (moveSensorState == 0 && tempSensorState == 0) {
+    if ((mode >> DEEP_SLEEP_EN) & 0x1) {
+      Serial.println("Going sleep");
+      delay(500);
+      esp_deep_sleep_start();
+    }
   }
+     
 }
 
 
