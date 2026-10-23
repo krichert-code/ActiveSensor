@@ -4,6 +4,7 @@
 #include <OneWire.h>
 #include <DallasTemperature.h>
 #include "driver/rtc_io.h"
+#include <Preferences.h>
 
 
 #define TIME_TO_SLEEP  60 * 1000000ULL /* Time ESP32 will go to sleep (in seconds) */
@@ -22,9 +23,11 @@ typedef enum ModeType
 } ModeType;
 
 // GPIO move sensor
-const gpio_num_t sensorPin = GPIO_NUM_15; 
+const gpio_num_t sensorPin = GPIO_NUM_15;
 // GPIO where the DS18B20 is connected to
-const int oneWireBus = 4;     
+const int oneWireBus = 4;
+// GPIO connected led
+const gpio_num_t connectionPin = GPIO_NUM_2;
 
 const char* ssid = "DomWiFiExt";
 const char* password = "";
@@ -53,6 +56,7 @@ OneWire oneWire(oneWireBus);
 // Pass our oneWire reference to Dallas Temperature sensor 
 DallasTemperature sensors(&oneWire);
 
+Preferences preferences;
 
 void updateUrls() {
 
@@ -81,7 +85,6 @@ void task_wakeup_reason() {
 }
 
 void ARDUINO_ISR_ATTR moveSensorInterrupt() {
-    // Any code you want to run
     if (moveSensorState == 0) {
       Serial.println("----------------------------");
       Serial.println("Interrupt - sensor activated");
@@ -98,12 +101,17 @@ void ARDUINO_ISR_ATTR tempTimerInterrupt() {
 
 void connectWiFi() {
   if (WiFi.status() != WL_CONNECTED) {
+    digitalWrite(connectionPin, LOW);
+    
+    Serial.print("Connecting to ");
+    Serial.println(ssid);
+
     WiFi.begin(ssid, password);
-    Serial.println("Connecting...");
     while(WiFi.status() != WL_CONNECTED) {
       delay(500);
-      Serial.print("-");
+      Serial.print("-");      
     }
+    
     Serial.println("-");
     Serial.print("Connected to WiFi network with IP Address: ");
     Serial.println(WiFi.localIP());
@@ -117,8 +125,8 @@ String sendHTTPReq(String req) {
   connectWiFi();
   
   http.begin(req.c_str());
-  http.setConnectTimeout(50);
-  http.setTimeout(10);
+  http.setConnectTimeout(1000);
+  //http.setTimeout(50);
 
   // Send HTTP GET request
   int httpResponseCode = http.GET();
@@ -139,24 +147,37 @@ int findServer() {
   connectWiFi();
 
   String ip =  WiFi.localIP().toString();
+  int ip_value = 255;
   int idx = ip.lastIndexOf(".")+1;
   String result;
   String url;
   
   ip = ip.substring(0, idx);
 
-  for (int i=1;i<255;i++) {
+  Serial.println("Looking for alarm system");
+  
+  ip_value = preferences.getUChar("ip", 0);
+  if (ip_value == 255) ip_value=0;
+    
+  for (int i=ip_value;i<255;i++) {
     url = "http://"+ip+String(i)+findAlarmUrl;
-    //Serial.println(url);
+    Serial.println(url);
     result = sendHTTPReq(url);
     if ((result.length() > 0) && (result.indexOf("<system>Alarm</system>") != -1)) {
       strcpy(serverIp, "http://");
       strcat(serverIp, ip.c_str());
       strcat(serverIp, String(i).c_str());
+      digitalWrite(connectionPin, HIGH);
+      preferences.putUChar("ip", (uint8_t)i);
       return 0;
+    }
+    else if (i == ip_value && ip_value != 0) {
+      // old alarm ip is invalid - clear value in settings
+      preferences.putUChar("ip", 255);
     }
   }
 
+  Serial.println("Alarm system has not found");
   return 1;
 }
 
@@ -194,8 +215,12 @@ void getConfiguration() {
 
 void setup() {
   Serial.begin(115200); 
-  delay(500);
+  preferences.begin("configuration", false);
+  delay(1000);
 
+  pinMode(connectionPin, OUTPUT);
+  digitalWrite(connectionPin, LOW);
+  
   if (bootCount == 0) {
     //find server only on first boot(deep sleep case)
     int result = findServer();
@@ -245,6 +270,7 @@ void setup() {
       timer = timerBegin(1000000); 
       timerAttachInterrupt(timer, &tempTimerInterrupt);
       timerAlarm(timer, TIME_TO_SLEEP, true, 0); 
+      tempSensorState = 1;
     }
   
     if ((mode >> ASYNC_MOVE_SENSOR_EN) & 0x1) {
